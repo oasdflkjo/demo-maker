@@ -1,0 +1,15 @@
+TINY_DEMO_EFFECT 1
+value u_star_count 160
+value u_camera_speed 0.399999976
+value u_view_distance 1.99999988
+value u_near_plane 0.200000003
+value u_camera_wander 1.39999998
+value u_camera_curve 0
+value u_star_size 3
+value u_streak_length 0.154999986
+value u_streak_strength 1.75
+value u_far_fade 0.389999986
+value u_exposure 0.900000036
+value u_beat_reactivity 0.799999952
+text 1 "void v0.1" 0.397965103 0.46298933 13 0.550000012 0.850000024 1
+end

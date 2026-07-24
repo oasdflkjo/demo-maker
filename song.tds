@@ -1,0 +1,139 @@
+TINY_DEMO_STUDIO 1
+bpm 180
+instrument 0 0 0.0862088278 0.0743823573 0 0.138764724 0.16382353 0.790352941 0.0307352953 41.5058823 0.0549999997 0.850000024 0
+declick 0 1
+instrument 1 2 0.00400000019 0.119999997 0.550000012 0.0900000036 0.5 0.159999996 0.180000007 0 0.100000001 0.340000004 -0.119999997
+declick 1 1
+instrument 2 0 0.0120000001 0.159999996 0.114705883 0.706499994 0.846764743 0.158500016 0.874558806 0 0.100000001 0.417647064 0
+declick 2 1
+instrument 3 4 0.00100000005 0.080235295 0.123529412 0.0919411778 0.859999955 0.670970619 0.466617614 0 0.100000001 0.264705896 0.200000003
+declick 3 1
+pattern 0 "Kick 1" 0 16
+note 0 0 24 1
+note 0 8 24 1
+pattern 1 "Bass 1" 1 16
+note 1 2 36 2
+note 1 4 43 2
+note 1 6 34 2
+note 1 8 36 2
+note 1 10 39 2
+note 1 14 32 2
+pattern 2 "Hat 1" 3 16
+note 2 4 84 1
+note 2 12 84 1
+pattern 3 "Kick 2" 0 16
+note 3 0 36 1
+note 3 8 36 1
+note 3 10 36 1
+pattern 4 "Bass 2" 1 16
+note 4 0 36 2
+note 4 2 36 2
+note 4 4 43 2
+note 4 6 34 2
+note 4 8 36 2
+note 4 10 39 2
+note 4 12 43 2
+note 4 14 34 2
+pattern 5 "Lead 2" 2 16
+note 5 0 60 2
+note 5 2 63 2
+note 5 4 67 2
+note 5 8 67 2
+note 5 10 63 2
+note 5 12 62 2
+note 5 14 58 2
+pattern 6 "Hat 2" 3 16
+note 6 0 84 1
+note 6 2 84 1
+note 6 4 84 1
+note 6 6 84 1
+note 6 8 84 1
+note 6 10 84 1
+note 6 12 84 1
+note 6 14 84 1
+pattern 7 "Kick 3" 0 16
+note 7 0 36 1
+note 7 8 36 1
+note 7 10 36 1
+pattern 8 "Bass 3" 1 16
+note 8 0 36 2
+note 8 2 36 2
+note 8 4 43 2
+note 8 6 34 2
+note 8 8 36 2
+note 8 10 39 2
+note 8 12 43 2
+note 8 14 34 2
+pattern 9 "Lead 3" 2 16
+note 9 0 60 2
+note 9 2 63 2
+note 9 4 67 2
+note 9 8 67 2
+note 9 10 63 2
+note 9 12 62 2
+note 9 14 58 2
+pattern 10 "Hat 3" 3 16
+note 10 0 84 1
+note 10 2 84 1
+note 10 4 84 1
+note 10 6 84 1
+note 10 8 84 1
+note 10 10 84 1
+note 10 12 84 1
+note 10 14 84 1
+pattern 11 "Kick 4" 0 16
+note 11 0 36 1
+note 11 8 36 1
+note 11 10 36 1
+pattern 12 "Bass 4" 1 16
+note 12 0 36 2
+note 12 2 36 2
+note 12 4 43 2
+note 12 6 34 2
+note 12 8 36 2
+note 12 10 39 2
+note 12 12 43 2
+note 12 14 34 2
+pattern 13 "Lead 4" 2 16
+note 13 0 72 2
+note 13 2 75 2
+note 13 4 79 2
+note 13 6 81 2
+note 13 8 79 2
+note 13 10 75 2
+note 13 12 72 2
+note 13 14 75 2
+pattern 14 "Hat 4" 3 16
+note 14 0 84 1
+note 14 2 84 1
+note 14 4 84 1
+note 14 6 84 1
+note 14 8 84 1
+note 14 10 84 1
+note 14 12 84 1
+note 14 14 84 1
+clip 0 0 0
+clip 1 0 1
+clip 3 0 2
+clip 2 16 5
+clip 2 32 9
+clip 2 48 13
+clip 0 16 0
+clip 0 32 0
+clip 0 48 0
+clip 3 16 2
+clip 3 32 2
+clip 3 48 2
+clip 2 0 5
+clip 1 16 1
+clip 1 32 1
+clip 1 48 1
+lane_mute 0 0
+lane_mute 1 0
+lane_mute 2 0
+lane_mute 3 0
+lane_mute 4 0
+lane_mute 5 0
+lane_mute 6 0
+lane_mute 7 0
+end
