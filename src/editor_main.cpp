@@ -434,7 +434,7 @@ int main(int argc, char** argv) {
     }
 
     SDL_Window* window = SDL_CreateWindow(
-        "Tiny Demo Studio — Playlist", SDL_WINDOWPOS_CENTERED,
+        "Demo Maker — Playlist", SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED, 1440, 900,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (window == nullptr) {
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
                             "Playlist playback restored at the previous position.";
                         state.status_is_error = false;
                         SDL_SetWindowTitle(window,
-                                           "Tiny Demo Studio — Playlist");
+                                           "Demo Maker — Playlist");
                     } else {
                         running = false;
                     }
@@ -635,7 +635,7 @@ int main(int argc, char** argv) {
                                background.b, background.a);
         SDL_RenderClear(renderer);
         ui.fill({0, 0, static_cast<float>(window_width), 72}, panel);
-        ui.text(24, 20, "TINY DEMO STUDIO", foreground);
+        ui.text(24, 20, "DEMO MAKER", foreground);
         ui.text(24, 43,
                 state.view == EditorView::playlist ? "PLAYLIST / ARRANGEMENT"
                                                    : "PATTERN PIANO ROLL",
@@ -752,7 +752,7 @@ int main(int argc, char** argv) {
                 state.selected_note =
                     (state.view_octaves[selected_pattern.instrument] + 1) * 12;
                 SDL_SetWindowTitle(window,
-                                   "Tiny Demo Studio — Pattern Piano Roll");
+                                   "Demo Maker — Pattern Piano Roll");
             }
 
             ui.text(24, 141, "PLAYLIST", foreground);
@@ -926,7 +926,7 @@ int main(int argc, char** argv) {
                         state.selected_step = 0;
                         SDL_SetWindowTitle(
                             window,
-                            "Tiny Demo Studio — Pattern Piano Roll");
+                            "Demo Maker — Pattern Piano Roll");
                     } else if (mouse_playlist_position().has_value()) {
                         begin_drag_clip = index;
                         copy_drag_selection = input.shift_down;
@@ -1182,7 +1182,7 @@ int main(int argc, char** argv) {
                 state.status =
                     "Playlist playback restored at the previous position.";
                 state.status_is_error = false;
-                SDL_SetWindowTitle(window, "Tiny Demo Studio — Playlist");
+                SDL_SetWindowTitle(window, "Demo Maker — Playlist");
             }
             ui.text(194, 91,
                     "PATTERN " + std::to_string(state.selected_pattern + 1) +
@@ -1615,7 +1615,7 @@ int main(int argc, char** argv) {
             switch_to_playlist_audio = false;
             project_changed = true;
             reset_transport = true;
-            SDL_SetWindowTitle(window, "Tiny Demo Studio — Playlist");
+            SDL_SetWindowTitle(window, "Demo Maker — Playlist");
         }
         if (request_save) {
             save_project(project, project_path, state);

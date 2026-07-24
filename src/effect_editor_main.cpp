@@ -283,7 +283,7 @@ int main(int argc, char** argv) {
     }
 
     SDL_Window* controls_window = SDL_CreateWindow(
-        "Tiny Demo Studio — Effect Controls", 60, 80, 520, 980,
+        "Demo Maker — Effect Controls", 60, 80, 520, 980,
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (controls_window == nullptr) {
         std::cerr << "Control window creation failed: " << SDL_GetError()
@@ -322,7 +322,7 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
     SDL_Window* preview_window = SDL_CreateWindow(
-        "Tiny Demo Studio — Live Preview", 610, 180, 960, 540,
+        "Demo Maker — Live Preview", 610, 180, 960, 540,
         SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (preview_window == nullptr) {
         std::cerr << "Preview window creation failed: " << SDL_GetError()
@@ -490,7 +490,7 @@ int main(int argc, char** argv) {
                                background.b, background.a);
         SDL_RenderClear(controls_renderer);
         ui.fill({0, 0, static_cast<float>(controls_width), 82}, panel);
-        ui.text(22, 16, "TINY DEMO STUDIO", foreground);
+        ui.text(22, 16, "DEMO MAKER", foreground);
         ui.text(22, 42, "LIVE EFFECT PARAMETERS", muted);
 
         if (ui.button({245, 20, 78, 38}, playing ? "PAUSE" : "PLAY",

@@ -1,4 +1,4 @@
-# Tiny Demo Studio
+# Demo Maker
 
 A small procedural-demo framework built around one shared music engine.
 The current prototype already has:

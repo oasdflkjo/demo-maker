@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(tiny_demo_studio VERSION 0.1.0 LANGUAGES CXX)
+project(demo_maker VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
