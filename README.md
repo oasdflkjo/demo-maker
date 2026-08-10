@@ -35,7 +35,7 @@ ctest --test-dir build --output-on-failure
 Open or create a project:
 
 ```bash
-./build/tiny_editor --project my-song.tds
+./build/tiny_editor --project my-song.tds --effect starfield.fxp
 ```
 
 The default screen is the playlist/arrangement. A pattern is reusable MIDI
@@ -66,6 +66,16 @@ the actually populated bar range.
 Each lane has a `MUTE` checkbox. Muting a lane silences its arranged clips
 without changing the reusable pattern or its piano-roll solo preview.
 
+The `FX` lane at the top of the arrangement holds shader blocks on the same
+bar grid as the MIDI clips. `+ BLOCK` adds a one-bar Starfield block. Drag a
+shader block to move it, Shift-drag to copy it, right-click to delete it, or
+drag its bright right-edge handle to change its duration. FX movement and
+right-edge resizing snap to the one-beat grid, with a minimum one-beat length.
+Selecting a block opens the `EFFECT` inspector. The shader and its pixel text
+render only while the playhead is inside an enabled FX block. Visual blocks are
+stored in the `.fxp` preset and participate in `AUTO LOOP`; older presets
+without blocks automatically receive one spanning the populated song.
+
 Inside the piano roll:
 
 - left-click or left-drag to paint notes;
@@ -80,11 +90,18 @@ Inside the piano roll:
 - use the arrow keys to move or tune a selected note;
 - press Escape to return to the playlist.
 
-The instrument panel edits the selected pattern's waveform, envelope, filter,
-pitch drop, gain, and pan. `Remove end clicks` adds a short safety fade and
-allows release tails to finish across pattern-loop boundaries; it is stored
-per instrument and included in runtime exports. Space controls playback, while
-`Ctrl+S`, `Ctrl+O`, and `Ctrl+E` save, load, and export.
+The right-hand DAW inspector has `INSTRUMENT`, `EFFECT`, and `TEXT` tabs.
+Instrument edits the selected pattern's waveform, envelope, filter, pitch
+drop, gain, and pan. Effect embeds the live shader preview and generated
+uniform controls beside the timeline. Text places multiple hard-edged bitmap
+text overlays directly over that preview. All three use the same transport
+clock as the arrangement.
+
+`Remove end clicks` adds a short safety fade and allows release tails to finish
+across pattern-loop boundaries; it is stored per instrument and included in
+runtime exports. Space controls playback. `Ctrl+S` and the Save button save
+both the `.tds` song and `.fxp` visuals; `Ctrl+O` loads both, and `Ctrl+E`
+exports the runtime song.
 
 Save produces a readable `.tds` project containing patterns, instruments, and
 playlist clips. Legacy flat projects are imported as patterns automatically.
@@ -121,16 +138,18 @@ The main tuning parameters are declared at the top of `shaders/demo.frag`:
 - `u_near_plane` controls how close stars get before disappearing;
 - `u_view_distance` controls the depth of the generated volume.
 
-### Live effect editor
+### Integrated visual editor
 
-Open the generated parameter controls and the real demo preview:
+Shader and text editing are built into the main DAW:
 
 ```bash
-./build/tiny_effect_editor --preset starfield.fxp
+./build/tiny_editor --project song.tds --effect starfield.fxp
 ```
 
-The control window is an immediate-mode interface generated from declarations
-inside the shader. For example:
+Select a shader block in the `FX` arrangement lane to open `EFFECT` in the
+right inspector and see the transport-synchronized preview and parameter
+pages. The interface is generated from declarations inside the shader. For
+example:
 
 ```glsl
 // @param u_camera_speed "Camera speed" 0.115 0.01 0.4 0.005
@@ -141,25 +160,25 @@ The annotation contains the uniform name, display label, default, minimum,
 maximum, and step. Adding another annotation and uniform automatically adds
 another editor slider after the shader reloads.
 
-The effect editor supports:
+The integrated visual inspector supports:
 
 - live uniform editing against the actual OpenGL renderer;
 - automatic GLSL reload while preserving current parameter values;
 - default restoration and readable `.fxp` preset save/load;
 - multiple hard-edged Amiga-style pixel text overlays;
 - the same audio-derived beat clock as the final demo;
-- automatic loading of the editor's `song.tds` playlist, including lane mutes;
-- an explicit studio project with `--project my-song.tds`, or an exported
-  runtime song with `--song my-song.bin`;
-- Space to pause and `Ctrl+S`, `Ctrl+O`, `Ctrl+R` to save, load, and reload.
+- direct use of the open DAW arrangement, including lane mutes;
+- unified Save and Load actions for music and visuals.
 
 Select the `TEXT` tab and press `ADD` to create an overlay. Click its text
 field to type, then press Enter or Escape to finish. Each overlay has visible,
 position X/Y, integer pixel size, RGB, and `AUTO CENTER` controls. Auto Center
 uses the actual pixel-font bounds to center the complete text and its shadow.
 Text is rendered with the same built-in bitmap font in the live preview and
-`tiny_demo`, with no system font or smoothing dependency. Saving the `.fxp`
-preset stores every overlay.
+`tiny_demo`, with no system font or smoothing dependency. Pixel size is defined
+on the 1280×720 demo canvas and scales proportionally in the embedded preview
+and when the runtime window is resized. Saving the `.fxp` preset stores every
+overlay.
 
 Use a saved preset in the demo runtime:
 
@@ -191,14 +210,10 @@ tiny_editor
 ├── playlist arrangement and draggable MIDI pattern clips
 ├── layered per-pattern piano roll
 ├── live instrument controls
-├── project save/load/export
+├── embedded OpenGL preview, shader controls, and pixel text
+├── unified music/visual save and load
+├── project export
 └── links the same tiny_core library
-
-tiny_effect_editor
-├── shader-discovered immediate controls
-├── live OpenGL preview and hot reload
-├── effect preset save/load
-└── audio-clocked synchronization
 ```
 
 `src/song.cpp` supplies the initial demo song. Once a project is saved, the

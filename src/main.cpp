@@ -21,14 +21,39 @@
 namespace {
 
 struct AudioState {
-    explicit AudioState(tiny::Song song) : synth(std::move(song)) {
-        const auto loop = synth.song().populated_range();
+    AudioState(tiny::Song song, tiny::StepRange loop)
+        : synth(std::move(song)) {
         synth.set_loop_steps(loop.start, loop.length);
     }
 
     tiny::SynthEngine synth;
     std::atomic<std::uint64_t> generated_samples{0};
 };
+
+tiny::StepRange combined_populated_range(
+    const tiny::Song& song, const tiny::EffectSettings& effect) {
+    const auto music = song.populated_range();
+    std::size_t first = music.start;
+    std::size_t last = music.start + music.length;
+    for (const auto& clip : effect.clips()) {
+        if (!clip.enabled) {
+            continue;
+        }
+        first = std::min<std::size_t>(first, clip.start_step);
+        last = std::max<std::size_t>(
+            last, clip.start_step + clip.length_steps);
+    }
+    const auto start =
+        first / tiny::steps_per_bar * tiny::steps_per_bar;
+    const auto end = std::min<std::size_t>(
+        tiny::song_step_count,
+        ((last + tiny::steps_per_bar - 1) / tiny::steps_per_bar) *
+            tiny::steps_per_bar);
+    return {
+        .start = start,
+        .length = std::max<std::size_t>(tiny::steps_per_bar, end - start),
+    };
+}
 
 void audio_callback(void* user_data, std::uint8_t* stream, int byte_count) {
     auto& state = *static_cast<AudioState*>(user_data);
@@ -206,7 +231,7 @@ int main(int argc, char** argv) {
         std::cerr << renderer.error() << '\n';
     }
 
-    AudioState audio(song);
+    AudioState audio(song, combined_populated_range(song, effect));
     SDL_AudioSpec desired{};
     desired.freq = static_cast<int>(tiny::sample_rate);
     desired.format = AUDIO_F32SYS;
@@ -278,7 +303,7 @@ int main(int argc, char** argv) {
         const auto sync = song.sync_at(audible_position);
 
         renderer.render(width, height, sync, effect.parameters(),
-                        effect.texts());
+                        effect.texts(), effect.active_at(sync.step));
         SDL_GL_SwapWindow(window);
     }
 

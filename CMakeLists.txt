@@ -59,6 +59,7 @@ if(TINY_BUILD_EDITOR)
     add_executable(tiny_editor
         src/editor_main.cpp
         src/editor_ui.cpp
+        src/gl_renderer.cpp
     )
 
     target_link_libraries(tiny_editor
@@ -66,6 +67,12 @@ if(TINY_BUILD_EDITOR)
             tiny_core
             SDL2::SDL2
             Freetype::Freetype
+            OpenGL::GL
+    )
+
+    target_compile_definitions(tiny_editor
+        PRIVATE
+            TINY_DEMO_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/shaders/demo.frag"
     )
 
     target_compile_options(tiny_editor PRIVATE
@@ -74,30 +81,6 @@ if(TINY_BUILD_EDITOR)
         -Wpedantic
     )
 
-    add_executable(tiny_effect_editor
-        src/effect_editor_main.cpp
-        src/editor_ui.cpp
-        src/gl_renderer.cpp
-    )
-
-    target_link_libraries(tiny_effect_editor
-        PRIVATE
-            tiny_core
-            SDL2::SDL2
-            Freetype::Freetype
-            OpenGL::GL
-    )
-
-    target_compile_definitions(tiny_effect_editor
-        PRIVATE
-            TINY_DEMO_SHADER_PATH="${CMAKE_CURRENT_SOURCE_DIR}/shaders/demo.frag"
-    )
-
-    target_compile_options(tiny_effect_editor PRIVATE
-        -Wall
-        -Wextra
-        -Wpedantic
-    )
 endif()
 
 include(CTest)

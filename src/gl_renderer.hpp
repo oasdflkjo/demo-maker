@@ -19,7 +19,8 @@ public:
     bool reload_if_changed();
     void render(int width, int height, const SyncState& sync,
                 std::span<const EffectParameter> parameters = {},
-                std::span<const TextOverlay> texts = {});
+                std::span<const TextOverlay> texts = {},
+                bool effect_active = true);
     void shutdown();
     [[nodiscard]] const std::string& error() const;
 

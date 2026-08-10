@@ -208,12 +208,17 @@ bool GlRenderer::reload_if_changed() {
 void GlRenderer::render(
     int width, int height, const SyncState& sync,
     std::span<const EffectParameter> parameters,
-    std::span<const TextOverlay> texts) {
+    std::span<const TextOverlay> texts, bool effect_active) {
     if (program_ == 0) {
         return;
     }
 
     glViewport(0, 0, width, height);
+    if (!effect_active) {
+        glClearColor(0.0F, 0.0F, 0.0F, 1.0F);
+        glClear(GL_COLOR_BUFFER_BIT);
+        return;
+    }
     glUseProgram(program_);
     glBindVertexArray(vertex_array_);
 
@@ -361,8 +366,9 @@ void GlRenderer::render_texts(int width, int height,
             continue;
         }
 
-        const float pixel_size =
-            std::clamp(std::round(text.scale), 1.0F, 16.0F);
+        const float pixel_size = text_pixel_size_for_viewport(
+            text.scale, static_cast<float>(width),
+            static_cast<float>(height));
         const float origin_x =
             std::round(text.x * static_cast<float>(width));
         const float origin_y =

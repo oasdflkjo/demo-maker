@@ -23,12 +23,19 @@ EffectParameter* find_parameter(std::vector<EffectParameter>& parameters,
 
 } // namespace
 
-void center_text_overlay(TextOverlay& text, float viewport_width,
-                         float viewport_height) {
+float text_pixel_size_for_viewport(float scale, float viewport_width,
+                                   float viewport_height) {
     if (viewport_width <= 0.0F || viewport_height <= 0.0F) {
-        return;
+        return 0.0F;
     }
 
+    const float canvas_scale =
+        std::min(viewport_width / effect_canvas_width,
+                 viewport_height / effect_canvas_height);
+    return std::clamp(std::round(scale), 1.0F, 16.0F) * canvas_scale;
+}
+
+void center_text_overlay(TextOverlay& text) {
     std::size_t line_count = 1;
     std::size_t current_columns = 0;
     std::size_t maximum_columns = 0;
@@ -43,18 +50,20 @@ void center_text_overlay(TextOverlay& text, float viewport_width,
     }
     maximum_columns = std::max(maximum_columns, current_columns);
 
-    const float pixel_size =
-        std::clamp(std::round(text.scale), 1.0F, 16.0F);
+    const float pixel_size = text_pixel_size_for_viewport(
+        text.scale, effect_canvas_width, effect_canvas_height);
     // Each glyph advances six pixels and each line advances eight. The final
     // spacing pixel is occupied by the one-pixel shadow in the renderer.
     const float text_width =
         static_cast<float>(maximum_columns * 6) * pixel_size;
     const float text_height =
         static_cast<float>(line_count * 8) * pixel_size;
-    text.x = std::max(0.0F, (viewport_width - text_width) * 0.5F /
-                                 viewport_width);
-    text.y = std::max(0.0F, (viewport_height - text_height) * 0.5F /
-                                 viewport_height);
+    text.x = std::max(
+        0.0F, (effect_canvas_width - text_width) * 0.5F /
+                  effect_canvas_width);
+    text.y = std::max(
+        0.0F, (effect_canvas_height - text_height) * 0.5F /
+                  effect_canvas_height);
 }
 
 bool EffectSettings::load_schema(const std::filesystem::path& shader_path,
@@ -137,6 +146,11 @@ bool EffectSettings::save_preset(const std::filesystem::path& path,
                << ' ' << text.scale << ' ' << text.color[0] << ' '
                << text.color[1] << ' ' << text.color[2] << '\n';
     }
+    for (const auto& clip : clips_) {
+        output << "clip " << (clip.enabled ? 1 : 0) << ' '
+               << std::quoted(clip.name) << ' ' << clip.start_step << ' '
+               << clip.length_steps << '\n';
+    }
     output << "end\n";
 
     if (!output) {
@@ -165,6 +179,7 @@ bool EffectSettings::load_preset(const std::filesystem::path& path,
 
     auto updated = parameters_;
     std::vector<TextOverlay> updated_texts;
+    std::vector<EffectClip> updated_clips;
     std::string command;
     bool reached_end = false;
     while (input >> command) {
@@ -197,6 +212,25 @@ bool EffectSettings::load_preset(const std::filesystem::path& path,
             updated_texts.push_back(std::move(text));
             continue;
         }
+        if (command == "clip") {
+            EffectClip clip;
+            int enabled = 0;
+            std::size_t start = 0;
+            std::size_t length = 0;
+            if (!(input >> enabled >> std::quoted(clip.name) >> start >>
+                  length) ||
+                (enabled != 0 && enabled != 1) || clip.name.empty() ||
+                start >= song_step_count || length == 0 ||
+                length > song_step_count - start) {
+                error = "Invalid visual effect clip in effect preset";
+                return false;
+            }
+            clip.enabled = enabled != 0;
+            clip.start_step = static_cast<std::uint16_t>(start);
+            clip.length_steps = static_cast<std::uint16_t>(length);
+            updated_clips.push_back(std::move(clip));
+            continue;
+        }
         if (command != "value") {
             error = "Unknown effect preset command: " + command;
             return false;
@@ -222,6 +256,7 @@ bool EffectSettings::load_preset(const std::filesystem::path& path,
 
     parameters_ = std::move(updated);
     texts_ = std::move(updated_texts);
+    clips_ = std::move(updated_clips);
     error.clear();
     return true;
 }
@@ -260,6 +295,42 @@ void EffectSettings::remove_text(std::size_t index) {
     if (index < texts_.size()) {
         texts_.erase(texts_.begin() + static_cast<std::ptrdiff_t>(index));
     }
+}
+
+std::span<const EffectClip> EffectSettings::clips() const {
+    return clips_;
+}
+
+std::span<EffectClip> EffectSettings::clips() {
+    return clips_;
+}
+
+std::size_t EffectSettings::add_clip(EffectClip clip) {
+    clip.start_step = static_cast<std::uint16_t>(
+        std::min<std::size_t>(clip.start_step, song_step_count - 1));
+    clip.length_steps = static_cast<std::uint16_t>(std::clamp<std::size_t>(
+        clip.length_steps, 1, song_step_count - clip.start_step));
+    if (clip.name.empty()) {
+        clip.name = "STARFIELD";
+    }
+    clips_.push_back(std::move(clip));
+    return clips_.size() - 1;
+}
+
+void EffectSettings::remove_clip(std::size_t index) {
+    if (index < clips_.size()) {
+        clips_.erase(clips_.begin() + static_cast<std::ptrdiff_t>(index));
+    }
+}
+
+bool EffectSettings::active_at(std::size_t step) const {
+    if (clips_.empty()) {
+        return true;
+    }
+    return std::ranges::any_of(clips_, [step](const EffectClip& clip) {
+        return clip.enabled && step >= clip.start_step &&
+               step < clip.start_step + clip.length_steps;
+    });
 }
 
 } // namespace tiny

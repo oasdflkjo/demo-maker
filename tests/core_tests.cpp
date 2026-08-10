@@ -147,6 +147,12 @@ int main() {
         .color = {0.2F, 0.8F, 1.0F},
         .enabled = true,
     });
+    effect.add_clip({
+        .name = "STARFIELD",
+        .start_step = 16,
+        .length_steps = 32,
+        .enabled = true,
+    });
     require(effect.save_preset(preset_path, error), error);
     effect.reset();
     require(effect.parameters()[0].value == 1.0F,
@@ -160,14 +166,31 @@ int main() {
     require(std::abs(effect.texts()[0].x - 0.25F) < 0.000001F &&
                 std::abs(effect.texts()[0].color[1] - 0.8F) < 0.000001F,
             "effect text placement and color must round-trip");
+    require(effect.clips().size() == 1 &&
+                effect.clips()[0].start_step == 16 &&
+                effect.clips()[0].length_steps == 32,
+            "visual effect clips must round-trip");
+    require(!effect.active_at(15) && effect.active_at(16) &&
+                !effect.active_at(48),
+            "visual effect clips must gate shader playback by song step");
     tiny::TextOverlay centered{
         .text = "AB",
         .scale = 5.0F,
     };
-    tiny::center_text_overlay(centered, 100.0F, 100.0F);
-    require(std::abs(centered.x - 0.20F) < 0.000001F &&
-                std::abs(centered.y - 0.30F) < 0.000001F,
-            "pixel text must center using its rendered bounds");
+    require(std::abs(tiny::text_pixel_size_for_viewport(
+                         centered.scale, 640.0F, 360.0F) -
+                     2.5F) <
+                0.000001F,
+            "preview text pixels must scale down with the viewport");
+    require(std::abs(tiny::text_pixel_size_for_viewport(
+                         centered.scale, 1280.0F, 720.0F) -
+                     5.0F) <
+                0.000001F,
+            "text scale must describe pixels on the demo canvas");
+    tiny::center_text_overlay(centered);
+    require(std::abs(centered.x - 0.4765625F) < 0.000001F &&
+                std::abs(centered.y - 0.4722222F) < 0.000001F,
+            "pixel text must center using its demo-canvas bounds");
 
     auto studio = tiny::StudioProject::make_demo();
     studio.instrument(0).declick = false;

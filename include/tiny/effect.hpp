@@ -1,13 +1,19 @@
 #pragma once
 
+#include "tiny/song.hpp"
+
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <vector>
 
 namespace tiny {
+
+inline constexpr float effect_canvas_width = 1280.0F;
+inline constexpr float effect_canvas_height = 720.0F;
 
 struct EffectParameter {
     std::string uniform;
@@ -28,8 +34,17 @@ struct TextOverlay {
     bool enabled{true};
 };
 
-void center_text_overlay(TextOverlay& text, float viewport_width,
-                         float viewport_height);
+struct EffectClip {
+    std::string name{"STARFIELD"};
+    std::uint16_t start_step{0};
+    std::uint16_t length_steps{steps_per_bar};
+    bool enabled{true};
+};
+
+[[nodiscard]] float text_pixel_size_for_viewport(float scale,
+                                                 float viewport_width,
+                                                 float viewport_height);
+void center_text_overlay(TextOverlay& text);
 
 class EffectSettings {
 public:
@@ -45,10 +60,16 @@ public:
     [[nodiscard]] std::span<TextOverlay> texts();
     std::size_t add_text(TextOverlay text = {});
     void remove_text(std::size_t index);
+    [[nodiscard]] std::span<const EffectClip> clips() const;
+    [[nodiscard]] std::span<EffectClip> clips();
+    std::size_t add_clip(EffectClip clip = {});
+    void remove_clip(std::size_t index);
+    [[nodiscard]] bool active_at(std::size_t step) const;
 
 private:
     std::vector<EffectParameter> parameters_;
     std::vector<TextOverlay> texts_;
+    std::vector<EffectClip> clips_;
 };
 
 } // namespace tiny

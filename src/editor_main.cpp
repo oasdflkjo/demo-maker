@@ -1,15 +1,19 @@
 #include "editor_ui.hpp"
+#include "gl_renderer.hpp"
+#include "tiny/effect.hpp"
 #include "tiny/project_io.hpp"
 #include "tiny/studio_project.hpp"
 #include "tiny/synth.hpp"
 
 #include <SDL2/SDL.h>
+#include <SDL2/SDL_opengl.h>
 
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <optional>
@@ -31,6 +35,7 @@ constexpr SDL_Color muted{123, 129, 154, 255};
 constexpr SDL_Color accent{119, 96, 238, 255};
 constexpr SDL_Color playhead{47, 171, 145, 160};
 constexpr SDL_Color warning{242, 184, 92, 255};
+constexpr int effect_snap_steps = static_cast<int>(tiny::steps_per_beat);
 
 constexpr std::array<std::string_view, tiny::track_count> track_names{
     "KICK", "BASS", "LEAD", "HAT"};
@@ -46,6 +51,12 @@ constexpr std::array<SDL_Color, tiny::track_count> pattern_colors{
 enum class EditorView {
     playlist,
     piano_roll,
+};
+
+enum class InspectorTab {
+    instrument,
+    effect,
+    text,
 };
 
 struct ClipDragOrigin {
@@ -64,6 +75,7 @@ struct AudioState {
 
 struct EditorState {
     EditorView view{EditorView::playlist};
+    InspectorTab inspector_tab{InspectorTab::effect};
     std::size_t selected_pattern{0};
     std::optional<std::size_t> selected_clip;
     std::vector<std::size_t> selected_clips;
@@ -86,6 +98,14 @@ struct EditorState {
     float box_selection_start_x{0.0F};
     float box_selection_start_y{0.0F};
     std::vector<std::size_t> box_selection_base;
+    std::optional<std::size_t> selected_effect_clip;
+    std::optional<std::size_t> dragging_effect_clip;
+    std::optional<std::size_t> resizing_effect_clip;
+    std::uint16_t effect_drag_start_step{0};
+    std::size_t effect_drag_pointer_step{0};
+    std::size_t effect_parameter_page{0};
+    std::size_t selected_text{0};
+    bool editing_effect_text{false};
     bool playing{true};
     std::string status{
         "Drag the pattern block into the playlist. Double-click a clip to edit."};
@@ -118,6 +138,148 @@ Rect rectangle_between(float start_x, float start_y, float end_x,
         .height = std::abs(end_y - start_y),
     };
 }
+
+int snap_effect_step(int step) {
+    const int clamped =
+        std::clamp(step, 0, static_cast<int>(tiny::song_step_count));
+    const int snapped =
+        ((clamped + effect_snap_steps / 2) / effect_snap_steps) *
+        effect_snap_steps;
+    return std::min(snapped, static_cast<int>(tiny::song_step_count));
+}
+
+class EmbeddedEffectPreview {
+public:
+    bool initialize(SDL_Renderer* ui_renderer,
+                    const std::filesystem::path& shader_path,
+                    std::string& error) {
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK,
+                            SDL_GL_CONTEXT_PROFILE_CORE);
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+
+        window_ = SDL_CreateWindow(
+            "Demo Maker — Embedded Preview", SDL_WINDOWPOS_UNDEFINED,
+            SDL_WINDOWPOS_UNDEFINED, preview_width, preview_height,
+            SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN);
+        if (window_ == nullptr) {
+            error = "Could not create embedded preview: " +
+                    std::string(SDL_GetError());
+            return false;
+        }
+        context_ = SDL_GL_CreateContext(window_);
+        if (context_ == nullptr) {
+            error = "Could not create preview OpenGL context: " +
+                    std::string(SDL_GetError());
+            shutdown();
+            return false;
+        }
+        SDL_GL_MakeCurrent(window_, context_);
+        if (!renderer_.initialize(shader_path)) {
+            error = renderer_.error();
+            shutdown();
+            return false;
+        }
+
+        texture_ = SDL_CreateTexture(
+            ui_renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING,
+            preview_width, preview_height);
+        if (texture_ == nullptr) {
+            error = "Could not create embedded preview texture: " +
+                    std::string(SDL_GetError());
+            shutdown();
+            return false;
+        }
+        SDL_SetTextureScaleMode(texture_, SDL_ScaleModeLinear);
+        raw_pixels_.resize(preview_width * preview_height * 4);
+        display_pixels_.resize(raw_pixels_.size());
+        error.clear();
+        return true;
+    }
+
+    void shutdown() {
+        if (texture_ != nullptr) {
+            SDL_DestroyTexture(texture_);
+            texture_ = nullptr;
+        }
+        if (context_ != nullptr && window_ != nullptr) {
+            SDL_GL_MakeCurrent(window_, context_);
+            renderer_.shutdown();
+            SDL_GL_DeleteContext(context_);
+            context_ = nullptr;
+        }
+        if (window_ != nullptr) {
+            SDL_DestroyWindow(window_);
+            window_ = nullptr;
+        }
+    }
+
+    bool reload() {
+        if (window_ == nullptr || context_ == nullptr) {
+            return false;
+        }
+        SDL_GL_MakeCurrent(window_, context_);
+        return renderer_.reload();
+    }
+
+    bool reload_if_changed() {
+        if (window_ == nullptr || context_ == nullptr) {
+            return false;
+        }
+        SDL_GL_MakeCurrent(window_, context_);
+        return renderer_.reload_if_changed();
+    }
+
+    void draw(SDL_Renderer* ui_renderer, Rect target,
+              const tiny::SyncState& sync,
+              const tiny::EffectSettings& effect) {
+        if (window_ == nullptr || context_ == nullptr || texture_ == nullptr) {
+            return;
+        }
+
+        SDL_GL_MakeCurrent(window_, context_);
+        renderer_.render(preview_width, preview_height, sync,
+                         effect.parameters(), effect.texts(),
+                         effect.active_at(sync.step));
+        glReadPixels(0, 0, preview_width, preview_height, GL_RGBA,
+                     GL_UNSIGNED_BYTE, raw_pixels_.data());
+
+        constexpr std::size_t row_bytes = preview_width * 4;
+        for (int row = 0; row < preview_height; ++row) {
+            const auto source_row =
+                static_cast<std::size_t>(preview_height - row - 1);
+            std::memcpy(display_pixels_.data() +
+                            static_cast<std::size_t>(row) * row_bytes,
+                        raw_pixels_.data() + source_row * row_bytes,
+                        row_bytes);
+        }
+        SDL_UpdateTexture(texture_, nullptr, display_pixels_.data(),
+                          preview_width * 4);
+
+        const SDL_Rect destination{
+            static_cast<int>(std::lround(target.x)),
+            static_cast<int>(std::lround(target.y)),
+            static_cast<int>(std::lround(target.width)),
+            static_cast<int>(std::lround(target.height)),
+        };
+        SDL_RenderCopy(ui_renderer, texture_, nullptr, &destination);
+    }
+
+    [[nodiscard]] const std::string& error() const {
+        return renderer_.error();
+    }
+
+private:
+    static constexpr int preview_width = 640;
+    static constexpr int preview_height = 360;
+    SDL_Window* window_{nullptr};
+    SDL_GLContext context_{nullptr};
+    SDL_Texture* texture_{nullptr};
+    tiny::GlRenderer renderer_;
+    std::vector<std::uint8_t> raw_pixels_;
+    std::vector<std::uint8_t> display_pixels_;
+};
 
 void audio_callback(void* user_data, std::uint8_t* stream, int byte_count) {
     auto& state = *static_cast<AudioState*>(user_data);
@@ -225,11 +387,52 @@ std::uint8_t default_gate(std::size_t instrument) {
     return instrument == 1 || instrument == 2 ? 2 : 1;
 }
 
+void ensure_visual_timeline(tiny::EffectSettings& effect,
+                            const tiny::StudioProject& project) {
+    if (!effect.clips().empty()) {
+        return;
+    }
+    const auto range = project.populated_range();
+    effect.add_clip({
+        .name = "STARFIELD",
+        .start_step = static_cast<std::uint16_t>(range.start),
+        .length_steps = static_cast<std::uint16_t>(range.length),
+        .enabled = true,
+    });
+}
+
+tiny::StepRange combined_populated_range(
+    const tiny::StudioProject& project,
+    const tiny::EffectSettings& effect) {
+    const auto music = project.populated_range();
+    std::size_t first = music.start;
+    std::size_t last = music.start + music.length;
+    for (const auto& clip : effect.clips()) {
+        if (!clip.enabled) {
+            continue;
+        }
+        first = std::min<std::size_t>(first, clip.start_step);
+        last = std::max<std::size_t>(
+            last, clip.start_step + clip.length_steps);
+    }
+    const auto start =
+        first / tiny::steps_per_bar * tiny::steps_per_bar;
+    const auto end = std::min<std::size_t>(
+        tiny::song_step_count,
+        ((last + tiny::steps_per_bar - 1) / tiny::steps_per_bar) *
+            tiny::steps_per_bar);
+    return {
+        .start = start,
+        .length = std::max<std::size_t>(tiny::steps_per_bar, end - start),
+    };
+}
+
 void apply_playlist_audio(SDL_AudioDeviceID device, AudioState& audio,
                           const tiny::StudioProject& project,
+                          const tiny::EffectSettings& effect,
                           bool reset_transport,
                           std::optional<std::size_t> seek_step = std::nullopt) {
-    const auto loop = project.populated_range();
+    const auto loop = combined_populated_range(project, effect);
     SDL_LockAudioDevice(device);
     audio.synth.clear_loop();
     audio.synth.set_song(project.compile_song(), reset_transport);
@@ -284,6 +487,30 @@ void save_project(const tiny::StudioProject& project,
     }
 }
 
+bool save_effect(const tiny::EffectSettings& effect,
+                 const std::filesystem::path& effect_path,
+                 EditorState& state) {
+    std::string error;
+    if (!effect.save_preset(effect_path, error)) {
+        state.status = error;
+        state.status_is_error = true;
+        return false;
+    }
+    return true;
+}
+
+bool load_effect(tiny::EffectSettings& effect,
+                 const std::filesystem::path& effect_path,
+                 EditorState& state) {
+    std::string error;
+    if (!effect.load_preset(effect_path, error)) {
+        state.status = error;
+        state.status_is_error = true;
+        return false;
+    }
+    return true;
+}
+
 bool load_project(tiny::StudioProject& project,
                   const std::filesystem::path& project_path,
                   EditorState& state) {
@@ -327,7 +554,21 @@ void export_project(const tiny::StudioProject& project,
 
 void print_help(std::string_view executable) {
     std::cout << "Usage: " << executable
-              << " [--project FILE] [--font FILE]\n";
+              << " [--project FILE] [--effect FILE] [--shader FILE]"
+                 " [--font FILE]\n";
+}
+
+int decimals_for_step(float step) {
+    if (step >= 1.0F) {
+        return 0;
+    }
+    if (step >= 0.1F) {
+        return 1;
+    }
+    if (step >= 0.01F) {
+        return 2;
+    }
+    return 3;
 }
 
 bool draw_instrument_panel(tiny::editor::Ui& ui,
@@ -338,15 +579,14 @@ bool draw_instrument_panel(tiny::editor::Ui& ui,
     const std::size_t instrument_index = pattern.instrument;
     auto& instrument = project.instrument(instrument_index);
 
-    ui.fill({panel_x, 88, panel_width, 720}, panel);
-    ui.text(panel_x + 18, 106,
+    ui.text(panel_x + 18, 146,
             "INSTRUMENT " + std::to_string(instrument_index + 1) + " / " +
                 std::string(track_names[instrument_index]),
             foreground);
 
     const auto waveform_index =
         static_cast<std::size_t>(instrument.waveform);
-    if (ui.button({panel_x + 18, 138, panel_width - 36, 36},
+    if (ui.button({panel_x + 18, 178, panel_width - 36, 36},
                   "WAVE  " + std::string(waveform_names[waveform_index]))) {
         instrument.waveform = static_cast<tiny::Waveform>(
             (waveform_index + 1) % waveform_names.size());
@@ -355,7 +595,7 @@ bool draw_instrument_panel(tiny::editor::Ui& ui,
 
     const float slider_x = panel_x + 18;
     const float slider_width = panel_width - 36;
-    float slider_y = 193;
+    float slider_y = 233;
     int slider_id = 200;
     auto instrument_slider =
         [&](std::string_view label, float& value, float minimum,
@@ -363,7 +603,7 @@ bool draw_instrument_panel(tiny::editor::Ui& ui,
             const bool slider_changed =
                 ui.slider(slider_id++, {slider_x, slider_y, slider_width, 40},
                           label, value, minimum, maximum, decimals);
-            slider_y += 56;
+            slider_y += 52;
             return slider_changed;
         };
 
@@ -394,6 +634,8 @@ bool draw_instrument_panel(tiny::editor::Ui& ui,
 
 int main(int argc, char** argv) {
     std::filesystem::path project_path = "song.tds";
+    std::filesystem::path effect_path = "starfield.fxp";
+    std::filesystem::path shader_path = TINY_DEMO_SHADER_PATH;
     std::filesystem::path font_path = find_font();
 
     for (int index = 1; index < argc; ++index) {
@@ -404,6 +646,14 @@ int main(int argc, char** argv) {
         }
         if (argument == "--project" && index + 1 < argc) {
             project_path = argv[++index];
+            continue;
+        }
+        if (argument == "--effect" && index + 1 < argc) {
+            effect_path = argv[++index];
+            continue;
+        }
+        if (argument == "--shader" && index + 1 < argc) {
+            shader_path = argv[++index];
             continue;
         }
         if (argument == "--font" && index + 1 < argc) {
@@ -427,6 +677,22 @@ int main(int argc, char** argv) {
     }
     state.selected_pattern =
         std::min(state.selected_pattern, project.patterns().size() - 1);
+
+    tiny::EffectSettings effect;
+    std::string effect_error;
+    if (!effect.load_schema(shader_path, false, effect_error)) {
+        std::cerr << effect_error << '\n';
+        return 1;
+    }
+    if (std::filesystem::exists(effect_path) &&
+        !load_effect(effect, effect_path, state)) {
+        std::cerr << state.status << '\n';
+        return 1;
+    }
+    ensure_visual_timeline(effect, project);
+    if (!effect.clips().empty()) {
+        state.selected_effect_clip = 0;
+    }
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0) {
         std::cerr << "SDL initialization failed: " << SDL_GetError() << '\n';
@@ -467,8 +733,16 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    EmbeddedEffectPreview effect_preview;
+    std::string preview_error;
+    if (!effect_preview.initialize(renderer, shader_path, preview_error)) {
+        state.status = preview_error;
+        state.status_is_error = true;
+    }
+
     AudioState audio(project.compile_song());
-    const auto initial_playlist_loop = project.populated_range();
+    const auto initial_playlist_loop =
+        combined_populated_range(project, effect);
     audio.synth.set_loop_steps(initial_playlist_loop.start,
                                initial_playlist_loop.length);
     SDL_AudioSpec desired{};
@@ -484,6 +758,7 @@ int main(int argc, char** argv) {
         SDL_OpenAudioDevice(nullptr, 0, &desired, &obtained, 0);
     if (audio_device == 0) {
         std::cerr << "Audio device creation failed: " << SDL_GetError() << '\n';
+        effect_preview.shutdown();
         ui.shutdown();
         SDL_DestroyRenderer(renderer);
         SDL_DestroyWindow(window);
@@ -493,6 +768,7 @@ int main(int argc, char** argv) {
     SDL_PauseAudioDevice(audio_device, 0);
 
     bool running = true;
+    std::uint32_t last_shader_reload_check = 0;
     while (running) {
         tiny::editor::Input input;
         const auto mouse_buttons =
@@ -542,11 +818,39 @@ int main(int argc, char** argv) {
                 }
             } else if (event.type == SDL_MOUSEWHEEL) {
                 input.wheel_y += event.wheel.y;
+            } else if (event.type == SDL_TEXTINPUT &&
+                       state.editing_effect_text &&
+                       state.selected_text < effect.texts().size()) {
+                auto& text = effect.texts()[state.selected_text].text;
+                for (const char character :
+                     std::string_view(event.text.text)) {
+                    const auto byte =
+                        static_cast<unsigned char>(character);
+                    if (byte >= 32 && byte <= 126 && text.size() < 128) {
+                        text.push_back(character);
+                    }
+                }
             } else if (event.type == SDL_KEYDOWN) {
                 const auto key = event.key.keysym.sym;
                 const auto modifiers =
                     static_cast<SDL_Keymod>(event.key.keysym.mod);
                 const bool control = (modifiers & KMOD_CTRL) != 0;
+
+                if (state.editing_effect_text) {
+                    if (control && key == SDLK_s) {
+                        request_save = true;
+                    } else if (key == SDLK_BACKSPACE &&
+                               state.selected_text < effect.texts().size() &&
+                               !effect.texts()[state.selected_text]
+                                    .text.empty()) {
+                        effect.texts()[state.selected_text].text.pop_back();
+                    } else if (key == SDLK_RETURN ||
+                               key == SDLK_KP_ENTER || key == SDLK_ESCAPE) {
+                        state.editing_effect_text = false;
+                        SDL_StopTextInput();
+                    }
+                    continue;
+                }
 
                 if (key == SDLK_ESCAPE) {
                     if (state.view == EditorView::piano_roll) {
@@ -674,7 +978,7 @@ int main(int argc, char** argv) {
         const tiny::Song flattened = project.compile_song();
         const tiny::StepRange active_loop =
             state.view == EditorView::playlist
-                ? project.populated_range()
+                ? combined_populated_range(project, effect)
                 : tiny::StepRange{
                       .start = 0,
                       .length =
@@ -685,6 +989,22 @@ int main(int argc, char** argv) {
             generated, rendered, latency, flattened.samples_per_step(),
             active_loop);
         const auto sync = flattened.sync_at(audible_position);
+        const std::uint32_t now = SDL_GetTicks();
+        if (now - last_shader_reload_check >= 200) {
+            if (effect_preview.reload_if_changed()) {
+                if (effect.load_schema(shader_path, true, effect_error)) {
+                    state.status = "Shader reloaded automatically.";
+                    state.status_is_error = false;
+                } else {
+                    state.status = effect_error;
+                    state.status_is_error = true;
+                }
+            } else if (!effect_preview.error().empty()) {
+                state.status = effect_preview.error();
+                state.status_is_error = true;
+            }
+            last_shader_reload_check = now;
+        }
         ui.text(965, 24,
                 "STEP " + std::to_string(sync.step + 1) + "  BEAT " +
                     std::to_string(static_cast<int>(sync.beat) + 1),
@@ -761,7 +1081,8 @@ int main(int argc, char** argv) {
                         std::to_string(tiny::song_step_count /
                                        tiny::steps_per_bar),
                     muted);
-            const auto playlist_loop = project.populated_range();
+            const auto playlist_loop =
+                combined_populated_range(project, effect);
             ui.text(350, 141,
                     "AUTO LOOP  " +
                         std::to_string(playlist_loop.start /
@@ -782,18 +1103,59 @@ int main(int argc, char** argv) {
             }
 
             constexpr std::size_t visible_steps = tiny::song_step_count;
-            constexpr float lane_height = 61.0F;
+            constexpr float effect_lane_height = 50.0F;
+            constexpr float lane_height = 54.0F;
             const float grid_x = 132.0F;
-            const float grid_y = 198.0F;
+            const float effect_lane_y = 198.0F;
+            const float grid_y = effect_lane_y + effect_lane_height + 6.0F;
             const float grid_width =
                 std::max(540.0F, editor_right - grid_x - 20);
             const float step_width = grid_width / visible_steps;
+            const Rect effect_lane_rect{
+                grid_x,
+                effect_lane_y,
+                grid_width,
+                effect_lane_height - 2.0F,
+            };
             const Rect playlist_rect{
                 grid_x,
                 grid_y,
                 grid_width,
                 lane_height * tiny::playlist_lane_count,
             };
+
+            ui.text(16, effect_lane_y + 16, "FX", playhead);
+            if (ui.button({48, effect_lane_y + 8, 80, 32}, "+ BLOCK")) {
+                std::size_t next_start = 0;
+                for (const auto& clip : effect.clips()) {
+                    next_start = std::max<std::size_t>(
+                        next_start, clip.start_step + clip.length_steps);
+                }
+                next_start = std::min<std::size_t>(
+                    next_start, tiny::song_step_count - tiny::steps_per_bar);
+                state.selected_effect_clip = effect.add_clip({
+                    .name = "STARFIELD",
+                    .start_step = static_cast<std::uint16_t>(next_start),
+                    .length_steps =
+                        static_cast<std::uint16_t>(tiny::steps_per_bar),
+                    .enabled = true,
+                });
+                state.inspector_tab = InspectorTab::effect;
+                project_changed = true;
+                state.status = "Added a shader block to the Visual FX lane.";
+                state.status_is_error = false;
+            }
+            ui.fill(effect_lane_rect, SDL_Color{23, 36, 47, 255});
+            for (std::size_t step = 0; step < visible_steps; step += 4) {
+                const float x =
+                    grid_x + static_cast<float>(step) * step_width;
+                ui.fill({x, effect_lane_y,
+                         step % tiny::steps_per_bar == 0 ? 2.0F : 1.0F,
+                         effect_lane_height - 2.0F},
+                        step % tiny::steps_per_bar == 0
+                            ? SDL_Color{68, 105, 121, 255}
+                            : SDL_Color{43, 66, 78, 255});
+            }
 
             for (std::size_t lane = 0; lane < tiny::playlist_lane_count;
                  ++lane) {
@@ -830,10 +1192,168 @@ int main(int argc, char** argv) {
             for (std::size_t bar = 0;
                  bar < tiny::song_step_count / tiny::steps_per_bar; ++bar) {
                 ui.text(grid_x + static_cast<float>(bar * 16) * step_width + 6,
-                        grid_y - 25,
+                        effect_lane_y - 25,
                         std::to_string(bar + 1),
                         foreground);
             }
+
+            auto mouse_effect_step = [&]() -> std::optional<std::size_t> {
+                if (!ui.hovered(effect_lane_rect)) {
+                    return std::nullopt;
+                }
+                return std::min<std::size_t>(
+                    static_cast<std::size_t>(
+                        (input.mouse_x - grid_x) / step_width),
+                    tiny::song_step_count - 1);
+            };
+
+            std::optional<std::size_t> delete_effect_clip;
+            std::optional<std::size_t> duplicate_effect_clip;
+            bool pointer_over_effect_clip = false;
+            for (std::size_t index = 0; index < effect.clips().size();
+                 ++index) {
+                const auto& clip = effect.clips()[index];
+                const float block_x =
+                    grid_x + static_cast<float>(clip.start_step) * step_width;
+                const float block_width = std::max(
+                    3.0F,
+                    static_cast<float>(clip.length_steps) * step_width - 3.0F);
+                const Rect block{
+                    block_x + 2.0F,
+                    effect_lane_y + 5.0F,
+                    block_width,
+                    effect_lane_height - 12.0F,
+                };
+                const float handle_width =
+                    std::min(9.0F, std::max(5.0F, block.width * 0.25F));
+                const Rect resize_handle{
+                    block.x + block.width - handle_width,
+                    block.y,
+                    handle_width,
+                    block.height,
+                };
+                ui.fill(block,
+                        clip.enabled ? SDL_Color{62, 191, 217, 255}
+                                     : SDL_Color{52, 78, 88, 255});
+                ui.fill(resize_handle,
+                        state.resizing_effect_clip == index ||
+                                ui.hovered(resize_handle)
+                            ? SDL_Color{236, 248, 251, 255}
+                            : SDL_Color{29, 119, 142, 255});
+                ui.text(block.x + 7.0F, block.y + 8.0F,
+                        block_width >= 90.0F ? clip.name : "FX",
+                        SDL_Color{11, 24, 30, 255});
+                if (state.selected_effect_clip == index) {
+                    ui.outline(block, SDL_Color{245, 248, 252, 255}, 2);
+                }
+                if (!ui.hovered(block)) {
+                    continue;
+                }
+                pointer_over_effect_clip = true;
+                if (input.right_pressed) {
+                    delete_effect_clip = index;
+                } else if (input.mouse_pressed) {
+                    state.selected_effect_clip = index;
+                    state.inspector_tab = InspectorTab::effect;
+                    state.selected_clips.clear();
+                    state.selected_clip.reset();
+                    if (ui.hovered(resize_handle)) {
+                        state.resizing_effect_clip = index;
+                        state.dragging_effect_clip.reset();
+                    } else if (input.shift_down) {
+                        duplicate_effect_clip = index;
+                    } else if (const auto step = mouse_effect_step()) {
+                        state.dragging_effect_clip = index;
+                        state.effect_drag_start_step = clip.start_step;
+                        state.effect_drag_pointer_step = *step;
+                    }
+                }
+            }
+
+            if (input.mouse_pressed && ui.hovered(effect_lane_rect) &&
+                !pointer_over_effect_clip) {
+                state.selected_effect_clip.reset();
+            }
+            if (delete_effect_clip.has_value()) {
+                effect.remove_clip(*delete_effect_clip);
+                state.selected_effect_clip.reset();
+                state.dragging_effect_clip.reset();
+                state.resizing_effect_clip.reset();
+                project_changed = true;
+                state.status = "Deleted the shader block.";
+                state.status_is_error = false;
+            }
+            if (duplicate_effect_clip.has_value() &&
+                *duplicate_effect_clip < effect.clips().size()) {
+                const auto copied_clip =
+                    effect.clips()[*duplicate_effect_clip];
+                const auto copied_index = effect.add_clip(copied_clip);
+                state.selected_effect_clip = copied_index;
+                state.dragging_effect_clip = copied_index;
+                state.effect_drag_start_step = copied_clip.start_step;
+                state.effect_drag_pointer_step =
+                    mouse_effect_step().value_or(copied_clip.start_step);
+                project_changed = true;
+                state.status = "Copied the selected shader block.";
+                state.status_is_error = false;
+            }
+            if (state.dragging_effect_clip.has_value() &&
+                *state.dragging_effect_clip < effect.clips().size()) {
+                if (const auto step = mouse_effect_step()) {
+                    auto& clip =
+                        effect.clips()[*state.dragging_effect_clip];
+                    const int requested_delta =
+                        static_cast<int>(*step) -
+                        static_cast<int>(state.effect_drag_pointer_step);
+                    const int proposed_start =
+                        static_cast<int>(state.effect_drag_start_step) +
+                        requested_delta;
+                    const int next_start = std::clamp(
+                        snap_effect_step(proposed_start), 0,
+                        static_cast<int>(tiny::song_step_count -
+                                         clip.length_steps));
+                    if (clip.start_step != next_start) {
+                        clip.start_step =
+                            static_cast<std::uint16_t>(next_start);
+                        project_changed = true;
+                    }
+                }
+                if (input.mouse_released) {
+                    state.dragging_effect_clip.reset();
+                }
+            }
+            if (state.resizing_effect_clip.has_value() &&
+                *state.resizing_effect_clip < effect.clips().size()) {
+                auto& clip =
+                    effect.clips()[*state.resizing_effect_clip];
+                const float raw_end =
+                    (static_cast<float>(input.mouse_x) - grid_x) /
+                    step_width;
+                const int snapped_end =
+                    snap_effect_step(static_cast<int>(std::lround(raw_end)));
+                const int minimum_end = std::min(
+                    static_cast<int>(tiny::song_step_count),
+                    static_cast<int>(clip.start_step) + effect_snap_steps);
+                const int next_end =
+                    std::clamp(snapped_end, minimum_end,
+                               static_cast<int>(tiny::song_step_count));
+                const auto next_length = static_cast<std::uint16_t>(
+                    next_end - static_cast<int>(clip.start_step));
+                if (clip.length_steps != next_length) {
+                    clip.length_steps = next_length;
+                    project_changed = true;
+                }
+                if (input.mouse_released) {
+                    state.resizing_effect_clip.reset();
+                    state.status =
+                        "Shader block length snapped to " +
+                        std::to_string(clip.length_steps /
+                                       tiny::steps_per_beat) +
+                        " beats.";
+                    state.status_is_error = false;
+                }
+            }
+
             const double playhead_step =
                 static_cast<double>(audible_position) /
                 static_cast<double>(flattened.samples_per_step());
@@ -998,6 +1518,12 @@ int main(int argc, char** argv) {
                 state.selected_clip.reset();
                 state.selected_clips.clear();
                 state.dragging_clips.clear();
+                state.selected_effect_clip =
+                    effect.clips().empty()
+                        ? std::optional<std::size_t>{}
+                        : std::optional<std::size_t>{0};
+                state.dragging_effect_clip.reset();
+                state.resizing_effect_clip.reset();
                 project_changed = true;
             }
             if (begin_drag_clip.has_value() &&
@@ -1173,7 +1699,9 @@ int main(int argc, char** argv) {
                 playhead_step < static_cast<double>(visible_steps)) {
                 const float x =
                     grid_x + static_cast<float>(playhead_step) * step_width;
-                ui.fill({x, grid_y, 3, playlist_rect.height}, playhead);
+                ui.fill({x, effect_lane_y, 3,
+                         grid_y + playlist_rect.height - effect_lane_y},
+                        playhead);
             }
         } else {
             if (ui.button({24, 82, 150, 36}, "< BACK TO PLAYLIST")) {
@@ -1574,10 +2102,234 @@ int main(int argc, char** argv) {
             }
         }
 
-        // The selected pattern owns the instrument shown in the common panel.
-        project_changed |= draw_instrument_panel(
-            ui, project, project.patterns()[state.selected_pattern], panel_x,
-            panel_width);
+        ui.fill({panel_x, 88, panel_width, 720}, panel);
+        const float inspector_x = panel_x + 12.0F;
+        const float inspector_width = panel_width - 24.0F;
+        const float tab_gap = 4.0F;
+        const float tab_width = (inspector_width - tab_gap * 2.0F) / 3.0F;
+        if (ui.button({inspector_x, 98, tab_width, 34}, "INSTRUMENT",
+                      state.inspector_tab == InspectorTab::instrument)) {
+            state.inspector_tab = InspectorTab::instrument;
+            state.editing_effect_text = false;
+            SDL_StopTextInput();
+        }
+        if (ui.button({inspector_x + tab_width + tab_gap, 98, tab_width, 34},
+                      "EFFECT",
+                      state.inspector_tab == InspectorTab::effect)) {
+            state.inspector_tab = InspectorTab::effect;
+            state.editing_effect_text = false;
+            SDL_StopTextInput();
+        }
+        if (ui.button(
+                {inspector_x + (tab_width + tab_gap) * 2.0F, 98, tab_width, 34},
+                "TEXT", state.inspector_tab == InspectorTab::text)) {
+            state.inspector_tab = InspectorTab::text;
+        }
+
+        if (state.inspector_tab == InspectorTab::instrument) {
+            // The selected pattern owns the instrument shown here.
+            project_changed |= draw_instrument_panel(
+                ui, project, project.patterns()[state.selected_pattern],
+                panel_x, panel_width);
+        } else {
+            const float preview_height = inspector_width * 9.0F / 16.0F;
+            const Rect preview_rect{
+                inspector_x,
+                142,
+                inspector_width,
+                preview_height,
+            };
+            effect_preview.draw(renderer, preview_rect, sync, effect);
+            ui.outline(preview_rect, SDL_Color{82, 88, 113, 255}, 2);
+            ui.text(preview_rect.x + 8.0F, preview_rect.y + 7.0F,
+                    effect.active_at(sync.step) ? "FX ACTIVE"
+                                                : "NO FX AT PLAYHEAD",
+                    effect.active_at(sync.step) ? playhead : warning);
+
+            float inspector_y =
+                preview_rect.y + preview_rect.height + 10.0F;
+            if (state.inspector_tab == InspectorTab::effect) {
+                if (ui.button({inspector_x, inspector_y, 82, 34},
+                              "DEFAULTS")) {
+                    effect.reset();
+                    state.status = "Restored shader parameter defaults.";
+                    state.status_is_error = false;
+                }
+                if (ui.button({inspector_x + 88, inspector_y, 76, 34},
+                              "RELOAD")) {
+                    if (effect_preview.reload() &&
+                        effect.load_schema(shader_path, true, effect_error)) {
+                        state.status = "Reloaded shader.";
+                        state.status_is_error = false;
+                    } else {
+                        state.status = effect_preview.error().empty()
+                                           ? effect_error
+                                           : effect_preview.error();
+                        state.status_is_error = true;
+                    }
+                }
+
+                constexpr std::size_t parameters_per_page = 6;
+                const auto parameter_count = effect.parameters().size();
+                const auto page_count = std::max<std::size_t>(
+                    1, (parameter_count + parameters_per_page - 1) /
+                           parameters_per_page);
+                state.effect_parameter_page =
+                    std::min(state.effect_parameter_page, page_count - 1);
+                if (ui.button({inspector_x + 174, inspector_y, 30, 34},
+                              "<")) {
+                    state.effect_parameter_page =
+                        (state.effect_parameter_page + page_count - 1) %
+                        page_count;
+                }
+                ui.text(inspector_x + 211, inspector_y + 8,
+                        std::to_string(state.effect_parameter_page + 1) + "/" +
+                            std::to_string(page_count),
+                        muted);
+                if (ui.button({inspector_x + inspector_width - 30, inspector_y,
+                               30, 34},
+                              ">")) {
+                    state.effect_parameter_page =
+                        (state.effect_parameter_page + 1) % page_count;
+                }
+                inspector_y += 44.0F;
+
+                const auto first_parameter =
+                    state.effect_parameter_page * parameters_per_page;
+                const auto last_parameter = std::min(
+                    parameter_count, first_parameter + parameters_per_page);
+                int slider_id = 3000;
+                for (std::size_t index = first_parameter;
+                     index < last_parameter; ++index) {
+                    auto& parameter = effect.parameters()[index];
+                    if (ui.slider(
+                            slider_id++,
+                            {inspector_x, inspector_y, inspector_width, 40},
+                            parameter.label, parameter.value,
+                            parameter.minimum, parameter.maximum,
+                            decimals_for_step(parameter.step))) {
+                        const float steps =
+                            std::round((parameter.value - parameter.minimum) /
+                                       parameter.step);
+                        parameter.value = std::clamp(
+                            parameter.minimum + steps * parameter.step,
+                            parameter.minimum, parameter.maximum);
+                    }
+                    inspector_y += 54.0F;
+                }
+            } else {
+                if (ui.button({inspector_x, inspector_y, 52, 34}, "ADD")) {
+                    state.selected_text = effect.add_text();
+                    state.editing_effect_text = false;
+                    SDL_StopTextInput();
+                    state.status = "Added a pixel text overlay.";
+                    state.status_is_error = false;
+                }
+                if (!effect.texts().empty()) {
+                    if (ui.button({inspector_x + 58, inspector_y, 30, 34},
+                                  "<")) {
+                        state.selected_text =
+                            (state.selected_text + effect.texts().size() - 1) %
+                            effect.texts().size();
+                        state.editing_effect_text = false;
+                        SDL_StopTextInput();
+                    }
+                    ui.text(inspector_x + 96, inspector_y + 8,
+                            std::to_string(state.selected_text + 1) + "/" +
+                                std::to_string(effect.texts().size()),
+                            foreground);
+                    if (ui.button({inspector_x + 145, inspector_y, 30, 34},
+                                  ">")) {
+                        state.selected_text =
+                            (state.selected_text + 1) % effect.texts().size();
+                        state.editing_effect_text = false;
+                        SDL_StopTextInput();
+                    }
+                    if (ui.button(
+                            {inspector_x + inspector_width - 76, inspector_y,
+                             76, 34},
+                            "DELETE")) {
+                        effect.remove_text(state.selected_text);
+                        state.selected_text =
+                            effect.texts().empty()
+                                ? 0
+                                : std::min(state.selected_text,
+                                           effect.texts().size() - 1);
+                        state.editing_effect_text = false;
+                        SDL_StopTextInput();
+                        state.status = "Deleted the text overlay.";
+                        state.status_is_error = false;
+                    }
+                }
+                inspector_y += 42.0F;
+
+                if (effect.texts().empty()) {
+                    ui.text(inspector_x, inspector_y + 8,
+                            "ADD TEXT TO PLACE PIXEL TYPE IN THE DEMO.",
+                            muted);
+                } else {
+                    state.selected_text =
+                        std::min(state.selected_text,
+                                 effect.texts().size() - 1);
+                    auto& text = effect.texts()[state.selected_text];
+                    std::string field_text = text.text;
+                    if (field_text.size() > 28) {
+                        field_text = field_text.substr(0, 25) + "...";
+                    }
+                    if (state.editing_effect_text) {
+                        field_text += "_";
+                    }
+                    if (ui.button(
+                            {inspector_x, inspector_y, inspector_width, 36},
+                            "TEXT  " + field_text,
+                            state.editing_effect_text)) {
+                        state.editing_effect_text = true;
+                        SDL_StartTextInput();
+                    }
+                    inspector_y += 42.0F;
+
+                    ui.checkbox({inspector_x, inspector_y, 126, 34}, "VISIBLE",
+                                text.enabled);
+                    if (ui.button(
+                            {inspector_x + 136, inspector_y,
+                             inspector_width - 136, 34},
+                            "AUTO CENTER")) {
+                        tiny::center_text_overlay(text);
+                        state.status = "Centered text on the demo canvas.";
+                        state.status_is_error = false;
+                    }
+                    inspector_y += 42.0F;
+
+                    int slider_id = 4000;
+                    ui.slider(slider_id++,
+                              {inspector_x, inspector_y, inspector_width, 36},
+                              "POSITION X", text.x, 0.0F, 1.0F, 2);
+                    inspector_y += 44.0F;
+                    ui.slider(slider_id++,
+                              {inspector_x, inspector_y, inspector_width, 36},
+                              "POSITION Y", text.y, 0.0F, 1.0F, 2);
+                    inspector_y += 44.0F;
+                    if (ui.slider(
+                            slider_id++,
+                            {inspector_x, inspector_y, inspector_width, 36},
+                            "PIXEL SIZE", text.scale, 1.0F, 16.0F, 0)) {
+                        text.scale = std::round(text.scale);
+                    }
+                    inspector_y += 44.0F;
+                    ui.slider(slider_id++,
+                              {inspector_x, inspector_y, inspector_width, 36},
+                              "RED", text.color[0], 0.0F, 1.0F, 2);
+                    inspector_y += 44.0F;
+                    ui.slider(slider_id++,
+                              {inspector_x, inspector_y, inspector_width, 36},
+                              "GREEN", text.color[1], 0.0F, 1.0F, 2);
+                    inspector_y += 44.0F;
+                    ui.slider(slider_id++,
+                              {inspector_x, inspector_y, inspector_width, 36},
+                              "BLUE", text.color[2], 0.0F, 1.0F, 2);
+                }
+            }
+        }
 
         const float footer_y =
             std::max(820.0F, static_cast<float>(window_height) - 62.0F);
@@ -1604,21 +2356,46 @@ int main(int argc, char** argv) {
             audio.rendered_samples.store(0, std::memory_order_release);
             SDL_UnlockAudioDevice(audio_device);
         }
-        if (request_load && load_project(project, project_path, state)) {
-            state.selected_pattern = 0;
-            state.selected_clip.reset();
-            state.selected_clips.clear();
-            state.box_selecting_clips = false;
-            state.dragging_clips.clear();
-            state.view = EditorView::playlist;
-            switch_to_pattern_audio = false;
-            switch_to_playlist_audio = false;
-            project_changed = true;
-            reset_transport = true;
-            SDL_SetWindowTitle(window, "Demo Maker — Playlist");
+        if (request_load) {
+            const bool song_loaded =
+                load_project(project, project_path, state);
+            bool effect_loaded = true;
+            if (std::filesystem::exists(effect_path)) {
+                effect_loaded = load_effect(effect, effect_path, state);
+            }
+            if (song_loaded) {
+                ensure_visual_timeline(effect, project);
+                state.selected_pattern = 0;
+                state.selected_clip.reset();
+                state.selected_clips.clear();
+                state.box_selecting_clips = false;
+                state.dragging_clips.clear();
+                state.selected_text =
+                    effect.texts().empty()
+                        ? 0
+                        : std::min(state.selected_text,
+                                   effect.texts().size() - 1);
+                state.editing_effect_text = false;
+                SDL_StopTextInput();
+                state.view = EditorView::playlist;
+                switch_to_pattern_audio = false;
+                switch_to_playlist_audio = false;
+                project_changed = true;
+                reset_transport = true;
+                SDL_SetWindowTitle(window, "Demo Maker — Playlist");
+                if (effect_loaded) {
+                    state.status = "Loaded song and visuals.";
+                    state.status_is_error = false;
+                }
+            }
         }
         if (request_save) {
             save_project(project, project_path, state);
+            if (!state.status_is_error &&
+                save_effect(effect, effect_path, state)) {
+                state.status = "Saved song and visuals.";
+                state.status_is_error = false;
+            }
         }
         if (request_export) {
             export_project(project, project_path, state);
@@ -1627,14 +2404,14 @@ int main(int argc, char** argv) {
             apply_pattern_audio(audio_device, audio, project,
                                 state.selected_pattern, true);
         } else if (switch_to_playlist_audio) {
-            apply_playlist_audio(audio_device, audio, project, false,
+            apply_playlist_audio(audio_device, audio, project, effect, false,
                                  state.playlist_resume_step);
         } else if (project_changed) {
             if (state.view == EditorView::piano_roll) {
                 apply_pattern_audio(audio_device, audio, project,
                                     state.selected_pattern, reset_transport);
             } else {
-                apply_playlist_audio(audio_device, audio, project,
+                apply_playlist_audio(audio_device, audio, project, effect,
                                      reset_transport);
             }
         }
@@ -1647,6 +2424,8 @@ int main(int argc, char** argv) {
     }
 
     SDL_CloseAudioDevice(audio_device);
+    SDL_StopTextInput();
+    effect_preview.shutdown();
     ui.shutdown();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
